@@ -75,7 +75,7 @@ if (status && (status.hash !== hash || !!s.lan !== !!args.lan || (args.lan && (s
 }
 
 if (!status) {
-  const pass = ['port', 'engine', 'model', 'claude', 'codex', 'editor', 'public-url', 'lan-key-file'].flatMap((k) => (args[k] ? ['--' + k, String(args[k])] : []));
+  const pass = ['port', 'engine', 'model', 'claude', 'codex', 'editor', 'public-url', 'lan-key-file'].flatMap((k) => (args[k] ? ['--' + k, k === 'lan-key-file' ? path.resolve(String(args[k])) : String(args[k])] : []));
   if (args.lan) pass.push('--lan');
   if (!args.port && s?.port) pass.push('--port', String(s.port)); // keep the address people have open
   fs.mkdirSync(path.dirname(stateFile), { recursive: true });

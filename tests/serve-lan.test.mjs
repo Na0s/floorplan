@@ -128,3 +128,29 @@ test('LAN configuration fails closed without an explicit safe origin', () => {
     assert.equal(result.status, 1, value); assert.ok(!result.stdout.includes(key));
   }
 });
+
+test('open resolves a custom relative key path once when launched outside the project', async () => {
+  const other = shopApp(); scanAndBuild(other);
+  let pid;
+  try {
+    const otherPort = await freePort();
+    const keyPath = path.join(other, 'private-access-key.txt');
+    const args = ['--lan', '--public-url', `http://192.0.2.45:${otherPort}`, '--port', String(otherPort), '--lan-key-file', path.relative(process.cwd(), keyPath), '--engine', 'codex', '--codex', path.join(other, 'missing-cli'), '--no-open'];
+    run('open.mjs', other, ...args);
+    const file = path.join(other, 'floorplan/.cache/server.json');
+    let state = JSON.parse(fs.readFileSync(file, 'utf8')); pid = state.pid;
+    assert.equal(state.lanKeyFile, keyPath);
+    run('open.mjs', other, ...args);
+    state = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(state.pid, pid, 'an equivalent launch must not revoke sessions by restarting');
+  } finally {
+    if (pid) {
+      try { process.kill(pid); } catch {}
+      for (let i = 0; i < 40; i++) {
+        try { process.kill(pid, 0); } catch { break; }
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    }
+    cleanup(other);
+  }
+});
