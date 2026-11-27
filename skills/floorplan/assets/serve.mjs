@@ -4,10 +4,13 @@
 //
 // usage: node floorplan/serve.mjs [--port 4378] [--engine claude|codex] [--model <model>] [--claude <path>] [--codex <path>]
 //                                 [--editor <name or link>] [--no-open] [--idle-exit <minutes>]
+//                                 [--lan --public-url <http(s) origin>] [--lan-key-file <private file>]
 //        node floorplan/serve.mjs --stop
 //        node floorplan/serve.mjs --export [<file>] [--include flows,notes,recent,health]   (a copy to share; default flows,notes)
 //
-// The server listens on 127.0.0.1 only. Each question runs in the codebase root, on your own account:
+// The server listens on 127.0.0.1 by default. --lan --public-url <origin>
+// enables access-key sign-in on the network. Keys never appear in logs or URLs.
+// Each question runs in the codebase root, on your own account:
 // `claude -p` with read-only tools (Read, Grep, Glob, and Bash limited to floorplan/query.mjs), or
 // `codex exec` in its read-only sandbox. It uses the one that built the map, else whichever is installed.
 // When the map is rebuilt, open tabs reload in place. The running server is recorded in .cache/server.json.
@@ -111,6 +114,75 @@ if (editorSetting.error) { console.error(`✗ ${has('editor') ? '--editor' : 'FL
 const editor = editorSetting.template;
 const token = crypto.randomBytes(16).toString('hex');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.json': 'application/json', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
+
+// LAN access is explicit. Loopback management keeps working, while network
+// clients must sign in before receiving the map, its API token, or any assets.
+const lan = has('lan');
+let publicUrl = null, lanKeyFile = null, accessKey = null;
+try {
+  if (!lan && (has('public-url') || has('lan-key-file'))) throw new Error('--public-url and --lan-key-file require --lan');
+  if (lan) {
+    const value = opt('public-url', '');
+    const parsed = new URL(value);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash || ['0.0.0.0', '[::]'].includes(parsed.hostname)) throw new Error('use an explicit http(s) origin, with no path, credentials, query or fragment');
+    publicUrl = parsed.origin;
+    lanKeyFile = path.resolve(opt('lan-key-file', path.join(here, '.cache', 'lan-access-key.txt')));
+    fs.mkdirSync(path.dirname(lanKeyFile), { recursive: true, mode: 0o700 });
+    try { fs.writeFileSync(lanKeyFile, crypto.randomBytes(32).toString('hex') + '\n', { flag: 'wx', mode: 0o600 }); }
+    catch (e) { if (e.code !== 'EEXIST') throw e; }
+    if (!fs.lstatSync(lanKeyFile).isFile()) throw new Error('the LAN key must be a regular file, not a link');
+    accessKey = fs.readFileSync(lanKeyFile, 'utf8').trim();
+    if (!/^[0-9a-f]{64}$/.test(accessKey)) throw new Error('the LAN key file must contain a 64-character random hexadecimal key');
+    fs.chmodSync(lanKeyFile, 0o600);
+  }
+} catch (e) { console.error(`LAN configuration: ${e.code || (e instanceof TypeError ? 'provide --public-url http://LAN-ADDRESS:PORT' : e.message)}`); process.exit(1); }
+const sessions = new Map();
+const SESSION_MS = 12 * 60 * 60 * 1000;
+const sessionCookie = 'floorplan_lan_session';
+const secureCookie = publicUrl?.startsWith('https:') ? '; Secure' : '';
+const cookieHeader = (value, seconds) => `${sessionCookie}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${seconds}${secureCookie}`;
+const cookieValue = (req) => String(req.headers.cookie || '').split(';').map(s => s.trim()).find(s => s.startsWith(sessionCookie + '='))?.slice(sessionCookie.length + 1);
+const validSession = (id) => {
+  const expires = sessions.get(id);
+  if (expires && expires > Date.now()) return true;
+  sessions.delete(id);
+  return false;
+};
+const equalKey = (value) => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value) && crypto.timingSafeEqual(Buffer.from(value), Buffer.from(accessKey));
+const loginPage = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Open Floorplan</title><style>body{font:16px system-ui;max-width:26rem;margin:12vh auto;padding:24px;color:#17212b;background:#f7f8fa}label,input,button{display:block}input,button{box-sizing:border-box;width:100%;padding:12px;margin-top:10px;border:1px solid #8894a1;border-radius:8px;font:inherit}button{background:#17212b;color:white;cursor:pointer}p{line-height:1.5}</style><h1>Open Floorplan</h1><p>Enter the access key saved on the computer running this map.</p><form method="post" action="/login"><label for="accessKey">Access key</label><input id="accessKey" name="accessKey" type="password" autocomplete="current-password" required maxlength="64"><button>Open map</button></form></html>`;
+
+function authenticateNetwork(req, res, url) {
+  const local = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress) && [`127.0.0.1:${port}`, `localhost:${port}`].includes(String(req.headers.host || '').toLowerCase());
+  if (!lan || local) return true;
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  if (req.headers.origin && req.headers.origin !== publicUrl) { res.writeHead(403); res.end('unknown origin'); return false; }
+  if (url.pathname === '/login' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': TYPES['.html'], 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" });
+    res.end(loginPage); return false;
+  }
+  if (url.pathname === '/login' && req.method === 'POST') {
+    if (String(req.headers['content-type'] || '').split(';')[0] !== 'application/x-www-form-urlencoded') { res.writeHead(415); res.end(); return false; }
+    let raw = '', tooLarge = false;
+    req.on('data', chunk => { if (tooLarge) return; raw += chunk; if (Buffer.byteLength(raw) > 1024) { tooLarge = true; res.writeHead(413); res.end(); } });
+    req.on('end', () => {
+      if (tooLarge) return;
+      const given = new URLSearchParams(raw).get('accessKey');
+      if (!equalKey(given)) { res.writeHead(401); res.end('Access key not accepted.'); return; }
+      for (const [id, expires] of sessions) if (expires <= Date.now()) sessions.delete(id);
+      while (sessions.size >= 128) sessions.delete(sessions.keys().next().value);
+      const id = crypto.randomBytes(32).toString('hex');
+      sessions.set(id, Date.now() + SESSION_MS);
+      res.writeHead(303, { 'Set-Cookie': cookieHeader(id, SESSION_MS / 1000), Location: '/' }); res.end();
+    });
+    return false;
+  }
+  if (!validSession(cookieValue(req))) {
+    res.writeHead(401, { 'Content-Type': TYPES['.html'] }); res.end(loginPage); return false;
+  }
+  return true;
+}
 
 // ---------- find the CLI that answers: Claude Code or Codex ----------
 function which(cmd) {
@@ -543,13 +615,21 @@ function undoChange() {
 const server = http.createServer((req, res) => {
   // only this machine's own names: a website that points its domain at 127.0.0.1 (DNS rebinding) would
   // otherwise count as the same origin as the map, and could read its token from the page
-  if (![`127.0.0.1:${port}`, `localhost:${port}`].includes(String(req.headers.host || '').toLowerCase())) { res.writeHead(403); return res.end('unknown host'); }
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const sameOrigin = !req.headers.origin || req.headers.origin === `http://${req.headers.host}`;
+  if (![...([`127.0.0.1:${port}`, `localhost:${port}`]), ...(lan ? [new URL(publicUrl).host] : [])].includes(String(req.headers.host || '').toLowerCase())) { res.writeHead(403); return res.end('unknown host'); }
+  let url;
+  try { url = new URL(req.url, `http://${req.headers.host}`); }
+  catch { res.writeHead(400); return res.end('bad address'); }
+  if (!authenticateNetwork(req, res, url)) return;
+  const expectedOrigin = lan && String(req.headers.host || '').toLowerCase() === new URL(publicUrl).host ? publicUrl : `http://${req.headers.host}`;
+  const sameOrigin = !req.headers.origin || req.headers.origin === expectedOrigin;
   if (url.pathname.startsWith('/api/')) {
     // EventSource can't send headers, so the events stream takes the token in the query string
     const given = req.headers['x-floorplan-token'] || (url.pathname === '/api/events' ? url.searchParams.get('token') : null);
     if (!sameOrigin || given !== token) { res.writeHead(403); return res.end(); }
+    if (lan && req.method === 'POST' && url.pathname === '/api/logout') {
+      sessions.delete(cookieValue(req));
+      res.writeHead(204, { 'Set-Cookie': cookieHeader('', 0) }); return res.end();
+    }
     if (req.method === 'GET' && url.pathname === '/api/events') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
       res.write('retry: 1000\n\n'); // reconnect quickly after a restart
@@ -644,6 +724,9 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/' || url.pathname === '/index.html') { res.writeHead(200, { 'Content-Type': TYPES['.html'], 'Cache-Control': 'no-store' }); return res.end(page); }
   let file;
   try { file = path.join(here, decodeURIComponent(url.pathname)); } catch { res.writeHead(400); return res.end('bad address'); }
+  // A signed-in browser still cannot download server state, persistent keys,
+  // worksheets or generated descriptions. The map itself inlines its assets.
+  if (lan) { res.writeHead(404); return res.end('not found'); }
   // inside this folder only: a neighbour like ../floorplan-old/ also starts with this folder's path
   if (!file.startsWith(here + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) { res.writeHead(404); return res.end('not found'); }
   res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream' });
@@ -652,21 +735,23 @@ const server = http.createServer((req, res) => {
 // another map (or anything else) on the port: take the next free one
 let port = wantPort;
 server.on('error', (e) => {
-  if (e.code === 'EADDRINUSE' && port < wantPort + 20) { port++; server.listen(port, '127.0.0.1'); return; }
+  if (!lan && e.code === 'EADDRINUSE' && port < wantPort + 20) { port++; server.listen(port, '127.0.0.1'); return; }
   console.error(`✗ Couldn't start the map server: ${e.message}`);
   process.exit(1);
 });
-server.listen(port, '127.0.0.1');
+server.listen(port, lan ? '0.0.0.0' : '127.0.0.1');
 server.on('listening', () => {
   const u = `http://127.0.0.1:${port}`;
   try {
     fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-    fs.writeFileSync(stateFile, JSON.stringify({ pid: process.pid, port, url: u, token, hash: selfHash, startedAt: new Date().toISOString() }, null, 2));
+    fs.writeFileSync(stateFile, JSON.stringify({ pid: process.pid, port, url: u, token, hash: selfHash, startedAt: new Date().toISOString(), ...(lan ? { lan, publicUrl, lanKeyFile } : {}) }, null, 2), { mode: 0o600 });
+    fs.chmodSync(stateFile, 0o600);
   } catch {}
   const forget = () => { try { if (readState()?.pid === process.pid) fs.unlinkSync(stateFile); } catch {} };
   process.on('exit', forget);
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => process.exit(0));
-  console.log(`Floorplan: ${u}`);
+  console.log(`Floorplan: ${publicUrl || u}`);
+  if (lan) console.log(`LAN sign-in key file: ${lanKeyFile} (keep private; never shared in logs or URLs).`);
   console.log(cli
     ? `asking via ${ENGINES[engine].name} ${version || ''} (${cli.path})${model ? `, model ${model}` : ''}`
     : `${ENGINES[want].name} not found: the map works, but asking questions needs it (${ENGINES[want].site}). Pass --${want} <path> if it is installed somewhere unusual.`);

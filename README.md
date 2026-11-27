@@ -248,7 +248,7 @@ A `floorplan/` folder holding the map. In Claude Code, if you say yes, it also a
 
 ## Privacy
 
-- The scan, the map and its small local server all run on your computer. The server only accepts connections from your own machine.
+- The scan, the map and its small local server all run on your computer. By default, the server only accepts connections from your own machine. [Optional authenticated LAN access](docs/privacy-and-security.md#optional-authenticated-lan-access) lets trusted devices sign in with a private access key.
 - No dependencies or install scripts, and the map works offline: its layout engine and fonts are built in.
 - Questions on the map go to your own account, through the Claude Code CLI or Codex, which can read your code but not change it.
 - The Health check never stores or shows secret values, only where they are.
@@ -282,7 +282,7 @@ Floorplan has no hooks, no MCP servers and no dependencies, downloads nothing, a
 <details>
 <summary><b>Does my code leave my computer?</b></summary>
 
-Only the way Claude Code and Codex always work: the AI reads the files it needs to describe your app, through your own account. The map itself is a local file and its server only listens on your machine. If you choose to open the map in the Claude app instead, Claude uploads the map (names, descriptions and structure, not your source code) to your private claude.ai account, and asks first. The one thing Floorplan itself ever sends is your email, and only if you sign up for the [Floorplan Cloud waitlist](docs/privacy-and-security.md#floorplan-cloud-waitlist).
+Only the way Claude Code and Codex always work: the AI reads the files it needs to describe your app, through your own account. The map itself is a local file and its server only listens on your machine unless you explicitly enable authenticated LAN access. If you choose to open the map in the Claude app instead, Claude uploads the map (names, descriptions and structure, not your source code) to your private claude.ai account, and asks first. The one thing Floorplan itself ever sends is your email, and only if you sign up for the [Floorplan Cloud waitlist](docs/privacy-and-security.md#floorplan-cloud-waitlist).
 </details>
 
 <details>
