@@ -69,12 +69,15 @@ test('the only commands pre-approved are the skill’s own scripts, and that lis
 });
 
 test('it reaches the internet in one place: the waitlist, only when someone signs up', () => {
-  // no network modules except the map's own local server
+  // HTTP serves the map; net is used only to validate source IPv4 addresses.
   const netImports = find(/from\s+['"](?:node:)?(https?|http2|net|tls|dgram|dns|undici)['"]|require\(\s*['"](?:node:)?(https?|http2|net|tls|dgram|dns|undici)['"]\s*\)/);
-  assert.deepEqual(netImports.map((x) => `${x.file}: ${x.text}`), [`assets/serve.mjs: from 'node:http'`], `network modules. ${UPDATE}`);
-  // the server listens on this machine only
+  assert.deepEqual(netImports.map((x) => `${x.file}: ${x.text}`), [`assets/serve.mjs: from 'node:http'`, `assets/serve.mjs: from 'node:net'`, `scripts/open.mjs: from 'node:net'`], `network modules. ${UPDATE}`);
+  assert.deepEqual(find(/\bnet\.(?!isIPv4\b)\w+/).map(x => `${x.file}: ${x.text}`), [], 'net validates addresses only; no socket APIs');
+  // Loopback remains the default; network binding requires the explicit LAN
+  // flag. serve-lan.test.mjs exercises its authentication and disclosure gates.
   assert.match(read(path.join(SKILL, 'assets', 'serve.mjs')), /server\.listen\(port, '127\.0\.0\.1'\);/);
-  assert.doesNotMatch(read(path.join(SKILL, 'assets', 'serve.mjs')), /\.listen\([^)]*(0\.0\.0\.0|::)/);
+  assert.match(read(path.join(SKILL, 'assets', 'serve.mjs')), /const lan = has\('lan'\);/);
+  assert.match(read(path.join(SKILL, 'assets', 'serve.mjs')), /server\.listen\(port, lan \? '0\.0\.0\.0' : '127\.0\.0\.1'\);/);
 
   // every request: to the map's own server, except the one waitlist call
   const LOCAL = /^(['"`]\/|s\.url \+)/;

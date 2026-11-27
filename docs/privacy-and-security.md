@@ -23,13 +23,65 @@ The layout engine ([elkjs](https://github.com/kieler/elkjs) 0.9.3, EPL-2.0) and 
 
 ## The local server
 
-- It listens on `127.0.0.1` only, so other machines on your network can't reach it.
+- By default it listens on `127.0.0.1` only, so other machines on your network can't reach it. Optional authenticated LAN mode is described below.
 - Every start creates a random token, which only the map page it serves receives. Asking questions and saving flows require that token, and those requests are refused when they come from another website.
 - It answers only to `127.0.0.1` and `localhost` at its own port, so a website that points its own domain at your computer (DNS rebinding) can't load the map or its token.
 - Questions run Claude with **read-only** tools: reading files, searching, and the map's own lookup script. It can't edit files or run other commands.
 - With Codex, questions run in Codex's **read-only** sandbox: it can read and search, but not write files.
 - On a blueprint (a map planned from a PRD), **Change** requests run the same read-only way. The agent replies with the updated plan, and the server itself writes only `floorplan/plan.json`, `floorplan/architecture.json` and `floorplan/recent-work.json`, after checking them, keeping the old copies for Undo.
 - It stops by itself two hours after the last tab closes, and `node floorplan/serve.mjs --stop` stops it immediately.
+
+### Optional LAN access
+
+For trusted devices with stable addresses, `--allow-client` replaces key sign-in
+with an exact source IPv4 allowlist:
+
+```bash
+node floorplan/serve.mjs --lan --public-url http://192.168.1.20:4378 --allow-client 192.168.1.21
+```
+
+Comma-separated addresses are supported; wildcards and subnets are not. This
+mode never creates an access key or asks the allowed clients to sign in. Host,
+Origin and API-token checks still apply. The socket's peer address is used;
+forwarded-address headers do not grant access. Behind a TCP proxy, the peer is
+the proxy, so the proxy/firewall must separately restrict the original clients.
+Do not allow a shared proxy address unless that boundary is restricted too.
+`--allow-client` and `--lan-key-file` are mutually exclusive. Loopback management
+remains local in either mode.
+
+To use a map from another trusted device on your local network, opt in explicitly:
+
+```bash
+node floorplan/serve.mjs --lan --public-url http://192.168.1.20:4378 --port 4378
+```
+
+Replace the address with this computer's LAN address. Permit and forward only
+this port through your host firewall or VM/WSL host as needed. The server binds
+to `0.0.0.0`, but accepts only the configured public Host and the loopback names.
+Unlike local mode, it fails if the chosen port is occupied instead of silently
+changing the address. `open.mjs` supports the same flags and reuses a matching
+server; changing modes or public origin restarts it.
+
+Network browsers must enter an access key before receiving the map, source
+metadata, API token, or any API responses. The server creates a random key at
+`floorplan/.cache/lan-access-key.txt` with owner-only permissions on POSIX. Read
+that private file locally; its value is never printed or embedded in a URL.
+An existing key is retained across restarts. `--lan-key-file <path>` selects
+another regular file containing a 64-character random hexadecimal key.
+
+Successful sign-in creates an HttpOnly, SameSite=Strict session cookie that
+expires after 12 hours. Sessions are revoked when the server restarts. A
+same-origin `POST /api/logout` with the map's `x-floorplan-token` revokes that
+browser's session. The existing API token and Origin checks still apply after
+sign-in. Loopback management remains available to this computer, and network
+clients cannot bypass sign-in by sending a loopback Host header. In LAN mode,
+raw map files, server state, keys and worksheets are never served as downloads.
+
+HTTP LAN access does not encrypt traffic. Use it only on a trusted network;
+for an untrusted network use an HTTPS reverse proxy and configure its exact
+`https://` origin (which also enables Secure cookies). This mode is not a
+multi-user authorization system: anyone given the key can use the map and Ask
+through this computer's coding-agent account. Agent execution remains read-only.
 
 ## Floorplan Cloud waitlist
 

@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { shopApp, scanAndBuild, cleanup } from './helpers.mjs';
 
@@ -35,6 +36,16 @@ const api = (p, { headers = {}, ...opts } = {}) => fetch(base + p, { ...opts, he
 
 test('it listens on 127.0.0.1 only', () => {
   assert.match(base, /^http:\/\/127\.0\.0\.1:\d+$/);
+});
+
+test('default mode refuses connections to a non-loopback interface', async t => {
+  const address = Object.values(os.networkInterfaces()).flat().find(a => a?.family === 'IPv4' && !a.internal)?.address;
+  if (!address) { t.skip('no non-loopback interface'); return; }
+  await assert.rejects(new Promise((resolve, reject) => {
+    const req = http.get({ hostname: address, port: new URL(base).port, path: '/', timeout: 2000 }, res => { res.resume(); resolve(res.statusCode); });
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(Object.assign(new Error('non-loopback connection timed out'), { code: 'ETIMEDOUT' })));
+  }), error => ['ECONNREFUSED', 'ETIMEDOUT'].includes(error.code));
 });
 
 test('the page it serves carries a fresh token', () => {
