@@ -6,6 +6,7 @@
 //                      [--editor NAME|LINK]   (the editor "Open in editor" opens, e.g. cursor or "zed://file/{path}:{line}")
 //                      [--lan --public-url <http(s) origin>] [--lan-key-file <private file>]
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -58,16 +59,22 @@ const hadTabs = status?.tabs > 0;
 // a newer serve.mjs came with this build, or a different --editor was asked for: restart so the map gets it;
 // open tabs reconnect and reload
 let requestedPublicUrl = null;
+let requestedClients = [];
 try {
-  if (!args.lan && (args['public-url'] || args['lan-key-file'])) throw new Error();
+  if (!args.lan && (args['public-url'] || args['lan-key-file'] || args['allow-client'])) throw new Error();
   if (args.lan) {
     if (typeof args['public-url'] !== 'string' || (args['lan-key-file'] !== undefined && (typeof args['lan-key-file'] !== 'string' || !args['lan-key-file']))) throw new Error();
     const value = new URL(args['public-url']);
     if (!['http:', 'https:'].includes(value.protocol) || value.username || value.password || value.pathname !== '/' || value.search || value.hash || ['0.0.0.0', '[::]'].includes(value.hostname)) throw new Error();
     requestedPublicUrl = value.origin;
+    if (args['allow-client'] !== undefined) {
+      if (typeof args['allow-client'] !== 'string' || !args['allow-client'].trim() || args['lan-key-file']) throw new Error();
+      requestedClients = [...new Set(args['allow-client'].split(',').map(s => s.trim()).filter(Boolean))].sort();
+      if (!requestedClients.length || requestedClients.some(ip => !net.isIPv4(ip))) throw new Error();
+    }
   }
 } catch { console.error('LAN configuration: --lan requires --public-url with an explicit http(s) origin and no path, credentials, query or fragment.'); process.exit(1); }
-if (status && (status.hash !== hash || !!s.lan !== !!args.lan || (args.lan && (s.publicUrl !== requestedPublicUrl || (args['lan-key-file'] && s.lanKeyFile !== path.resolve(String(args['lan-key-file']))))) || (editor?.template && status.editor !== editor.template))) {
+if (status && (status.hash !== hash || !!s.lan !== !!args.lan || (args.lan && (s.publicUrl !== requestedPublicUrl || JSON.stringify(s.allowedClients || []) !== JSON.stringify(requestedClients) || (args['lan-key-file'] && s.lanKeyFile !== path.resolve(String(args['lan-key-file']))))) || (editor?.template && status.editor !== editor.template))) {
   try { process.kill(s.pid); } catch {}
   for (let i = 0; i < 20 && alive(s.pid); i++) await sleep(150);
   status = null;
@@ -75,7 +82,7 @@ if (status && (status.hash !== hash || !!s.lan !== !!args.lan || (args.lan && (s
 }
 
 if (!status) {
-  const pass = ['port', 'engine', 'model', 'claude', 'codex', 'editor', 'public-url', 'lan-key-file'].flatMap((k) => (args[k] ? ['--' + k, k === 'lan-key-file' ? path.resolve(String(args[k])) : String(args[k])] : []));
+  const pass = ['port', 'engine', 'model', 'claude', 'codex', 'editor', 'public-url', 'lan-key-file', 'allow-client'].flatMap((k) => (args[k] ? ['--' + k, k === 'lan-key-file' ? path.resolve(String(args[k])) : String(args[k])] : []));
   if (args.lan) pass.push('--lan');
   if (!args.port && s?.port) pass.push('--port', String(s.port)); // keep the address people have open
   fs.mkdirSync(path.dirname(stateFile), { recursive: true });
@@ -105,7 +112,8 @@ else if (args['no-open']) shown = 'not opened in a browser (--no-open): open the
 else shown = openBrowser(s.url) ? 'opened in the browser' : 'could not open a browser: open the URL yourself';
 
 console.log(`FLOORPLAN  ${s.publicUrl || s.url}  (${shown})`);
-if (s.lan) console.log(`LAN sign-in key file: ${s.lanKeyFile} (keep private).`);
+if (s.lanKeyFile) console.log(`LAN sign-in key file: ${s.lanKeyFile} (keep private).`);
+else if (s.lan) console.log('LAN access uses the configured source IP allowlist; no sign-in is required.');
 const CLI = {
   claude: { name: 'the Claude Code CLI', docs: 'https://docs.claude.com/en/docs/claude-code' },
   codex: { name: 'Codex', docs: 'https://developers.openai.com/codex' },

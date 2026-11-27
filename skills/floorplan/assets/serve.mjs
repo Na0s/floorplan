@@ -9,12 +9,14 @@
 //        node floorplan/serve.mjs --export [<file>] [--include flows,notes,recent,health]   (a copy to share; default flows,notes)
 //
 // The server listens on 127.0.0.1 by default. --lan --public-url <origin>
-// enables access-key sign-in on the network. Keys never appear in logs or URLs.
+// enables access-key sign-in, or --allow-client selects exact source IPs instead.
+// Keys never appear in logs or URLs.
 // Each question runs in the codebase root, on your own account:
 // `claude -p` with read-only tools (Read, Grep, Glob, and Bash limited to floorplan/query.mjs), or
 // `codex exec` in its read-only sandbox. It uses the one that built the map, else whichever is installed.
 // When the map is rebuilt, open tabs reload in place. The running server is recorded in .cache/server.json.
 import http from 'node:http';
+import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -116,16 +118,24 @@ const token = crypto.randomBytes(16).toString('hex');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.json': 'application/json', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
 
 // LAN access is explicit. Loopback management keeps working, while network
-// clients must sign in before receiving the map, its API token, or any assets.
+// clients must be explicitly allowed or sign in before receiving the map,
+// its API token, or any assets.
 const lan = has('lan');
+let allowedClients = [];
 let publicUrl = null, lanKeyFile = null, accessKey = null;
 try {
-  if (!lan && (has('public-url') || has('lan-key-file'))) throw new Error('--public-url and --lan-key-file require --lan');
+  if (!lan && (has('public-url') || has('lan-key-file') || has('allow-client'))) throw new Error('--public-url, --lan-key-file and --allow-client require --lan');
   if (lan) {
+    if (has('allow-client')) {
+      allowedClients = [...new Set(String(opt('allow-client', '')).split(',').map(s => s.trim()).filter(Boolean))].sort();
+      if (!allowedClients.length || allowedClients.some(ip => !net.isIPv4(ip))) throw new Error('--allow-client requires exact IPv4 addresses, separated by commas');
+      if (has('lan-key-file')) throw new Error('choose --allow-client or --lan-key-file, not both');
+    }
     const value = opt('public-url', '');
     const parsed = new URL(value);
     if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash || ['0.0.0.0', '[::]'].includes(parsed.hostname)) throw new Error('use an explicit http(s) origin, with no path, credentials, query or fragment');
     publicUrl = parsed.origin;
+    if (!allowedClients.length) {
     lanKeyFile = path.resolve(opt('lan-key-file', path.join(here, '.cache', 'lan-access-key.txt')));
     fs.mkdirSync(path.dirname(lanKeyFile), { recursive: true, mode: 0o700 });
     try { fs.writeFileSync(lanKeyFile, crypto.randomBytes(32).toString('hex') + '\n', { flag: 'wx', mode: 0o600 }); }
@@ -134,6 +144,7 @@ try {
     accessKey = fs.readFileSync(lanKeyFile, 'utf8').trim();
     if (!/^[0-9a-f]{64}$/.test(accessKey)) throw new Error('the LAN key file must contain a 64-character random hexadecimal key');
     fs.chmodSync(lanKeyFile, 0o600);
+    }
   }
 } catch (e) { console.error(`LAN configuration: ${e.code || (e instanceof TypeError ? 'provide --public-url http://LAN-ADDRESS:PORT' : e.message)}`); process.exit(1); }
 const sessions = new Map();
@@ -158,6 +169,11 @@ function authenticateNetwork(req, res, url) {
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   if (req.headers.origin && req.headers.origin !== publicUrl) { res.writeHead(403); res.end('unknown origin'); return false; }
+  if (allowedClients.length) {
+    const address = String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+    if (allowedClients.includes(address)) return true;
+    res.writeHead(403); res.end('client address not allowed'); return false;
+  }
   if (url.pathname === '/login' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': TYPES['.html'], 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" });
     res.end(loginPage); return false;
@@ -744,14 +760,15 @@ server.on('listening', () => {
   const u = `http://127.0.0.1:${port}`;
   try {
     fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-    fs.writeFileSync(stateFile, JSON.stringify({ pid: process.pid, port, url: u, token, hash: selfHash, startedAt: new Date().toISOString(), ...(lan ? { lan, publicUrl, lanKeyFile } : {}) }, null, 2), { mode: 0o600 });
+    fs.writeFileSync(stateFile, JSON.stringify({ pid: process.pid, port, url: u, token, hash: selfHash, startedAt: new Date().toISOString(), ...(lan ? { lan, publicUrl, lanKeyFile, allowedClients } : {}) }, null, 2), { mode: 0o600 });
     fs.chmodSync(stateFile, 0o600);
   } catch {}
   const forget = () => { try { if (readState()?.pid === process.pid) fs.unlinkSync(stateFile); } catch {} };
   process.on('exit', forget);
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => process.exit(0));
   console.log(`Floorplan: ${publicUrl || u}`);
-  if (lan) console.log(`LAN sign-in key file: ${lanKeyFile} (keep private; never shared in logs or URLs).`);
+  if (lanKeyFile) console.log(`LAN sign-in key file: ${lanKeyFile} (keep private; never shared in logs or URLs).`);
+  else if (lan) console.log('LAN access uses the configured source IP allowlist; no sign-in is required.');
   console.log(cli
     ? `asking via ${ENGINES[engine].name} ${version || ''} (${cli.path})${model ? `, model ${model}` : ''}`
     : `${ENGINES[want].name} not found: the map works, but asking questions needs it (${ENGINES[want].site}). Pass --${want} <path> if it is installed somewhere unusual.`);

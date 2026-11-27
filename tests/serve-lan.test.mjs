@@ -13,8 +13,8 @@ const freePort = () => new Promise((resolve, reject) => {
   const socket = net.createServer(); socket.once('error', reject);
   socket.listen(0, '0.0.0.0', () => { const p = socket.address().port; socket.close(() => resolve(p)); });
 });
-async function start() {
-  server = spawn(process.execPath, [path.join(root, 'floorplan/serve.mjs'), '--lan', '--public-url', origin, '--port', String(port), '--no-open'], {
+async function start(extra = []) {
+  server = spawn(process.execPath, [path.join(root, 'floorplan/serve.mjs'), '--lan', '--public-url', origin, '--port', String(port), '--no-open', ...extra], {
     cwd: root, env: { ...process.env, FLOORPLAN_CLAUDE: path.join(root, 'missing-cli'), FLOORPLAN_CODEX: path.join(root, 'missing-cli'), FLOORPLAN_NO_PROMPTS: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   await new Promise((resolve, reject) => {
@@ -153,4 +153,24 @@ test('open resolves a custom relative key path once when launched outside the pr
     }
     cleanup(other);
   }
+});
+
+test('explicit source-IP mode serves allowed clients without sign-in and denies other peers', async () => {
+  await stop();
+  const keyFile = path.join(root, 'floorplan/.cache/lan-access-key.txt');
+  fs.renameSync(keyFile, keyFile + '.unused');
+  await start(['--allow-client', '127.0.0.1']);
+  const state = JSON.parse(fs.readFileSync(path.join(root, 'floorplan/.cache/server.json'), 'utf8'));
+  assert.equal(state.lanKeyFile, null); assert.deepEqual(state.allowedClients, ['127.0.0.1']);
+  assert.equal(fs.existsSync(keyFile), false, 'IP mode must not create an access key');
+  assert.equal((await request('/')).status, 200);
+  assert.equal((await request('/api/flows')).status, 403);
+  assert.equal((await request('/api/flows', { headers: { 'x-floorplan-token': state.token, origin } })).status, 200);
+  assert.equal((await request('/api/flows', { headers: { 'x-floorplan-token': state.token, origin: 'https://evil.example' } })).status, 403);
+  assert.equal((await request('/.cache/server.json')).status, 404);
+  const address = Object.values(os.networkInterfaces()).flat().find(a => a?.family === 'IPv4' && !a.internal)?.address;
+  if (address) assert.equal((await request('/', { connect: address, headers: { 'x-forwarded-for': '127.0.0.1' } })).status, 403);
+  assert.throws(() => run('open.mjs', root, '--lan', '--public-url', origin, '--allow-client', '*', '--no-open'));
+  assert.throws(() => run('open.mjs', root, '--lan', '--public-url', origin, '--allow-client', ',,', '--no-open'));
+  assert.throws(() => run('open.mjs', root, '--lan', '--public-url', origin, '--allow-client', '127.0.0.1', '--lan-key-file', keyFile, '--no-open'));
 });

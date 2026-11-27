@@ -248,7 +248,7 @@ A `floorplan/` folder holding the map. In Claude Code, if you say yes, it also a
 
 ## Privacy
 
-- The scan, the map and its small local server all run on your computer. By default, the server only accepts connections from your own machine. [Optional authenticated LAN access](docs/privacy-and-security.md#optional-authenticated-lan-access) lets trusted devices sign in with a private access key.
+- The scan, the map and its small local server all run on your computer. By default, the server only accepts connections from your own machine. [Optional LAN access](docs/privacy-and-security.md#optional-lan-access) permits trusted devices using an explicit source-IP allowlist or a private access key.
 - No dependencies or install scripts, and the map works offline: its layout engine and fonts are built in.
 - Questions on the map go to your own account, through the Claude Code CLI or Codex, which can read your code but not change it.
 - The Health check never stores or shows secret values, only where they are.

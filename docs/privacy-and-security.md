@@ -31,7 +31,23 @@ The layout engine ([elkjs](https://github.com/kieler/elkjs) 0.9.3, EPL-2.0) and 
 - On a blueprint (a map planned from a PRD), **Change** requests run the same read-only way. The agent replies with the updated plan, and the server itself writes only `floorplan/plan.json`, `floorplan/architecture.json` and `floorplan/recent-work.json`, after checking them, keeping the old copies for Undo.
 - It stops by itself two hours after the last tab closes, and `node floorplan/serve.mjs --stop` stops it immediately.
 
-### Optional authenticated LAN access
+### Optional LAN access
+
+For trusted devices with stable addresses, `--allow-client` replaces key sign-in
+with an exact source IPv4 allowlist:
+
+```bash
+node floorplan/serve.mjs --lan --public-url http://192.168.1.20:4378 --allow-client 192.168.1.21
+```
+
+Comma-separated addresses are supported; wildcards and subnets are not. This
+mode never creates an access key or asks the allowed clients to sign in. Host,
+Origin and API-token checks still apply. The socket's peer address is used;
+forwarded-address headers do not grant access. Behind a TCP proxy, the peer is
+the proxy, so the proxy/firewall must separately restrict the original clients.
+Do not allow a shared proxy address unless that boundary is restricted too.
+`--allow-client` and `--lan-key-file` are mutually exclusive. Loopback management
+remains local in either mode.
 
 To use a map from another trusted device on your local network, opt in explicitly:
 
